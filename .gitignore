@@ -141,3 +141,24 @@ dist
 vite.config.js.timestamp-*
 vite.config.ts.timestamp-*
 .vite/
+
+# ===== ApuntesIA: Cloudflare Worker (Wrangler) =====
+# SECRETS LOCALES (GROQ_API_KEY, DEEPSEEK_API_KEY): nunca a Git
+.dev.vars
+.dev.vars.*
+.wrangler/
+
+# ===== WXT (Chrome Extension) =====
+.wxt/
+stats.html
+stats-*.json
+
+# Artifacts de extensión (builds y LLAVE PRIVADA)
+*.zip
+*.crx
+*.pem
+
+# SO / editor
+.DS_Store
+Thumbs.db
+.idea/
