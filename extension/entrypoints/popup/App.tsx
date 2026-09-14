@@ -24,6 +24,12 @@ export default function App() {
     else setError(res?.error ?? 'No se pudo iniciar la captura');
   };
 
+  const openPanel = async () => {
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    if (tab?.id) await chrome.sidePanel.open({ tabId: tab.id });
+  };
+
+
   return (
     <div style={{ width: 300, padding: 16, fontFamily: 'system-ui', display: 'grid', gap: 12 }}>
       <h3 style={{ margin: 0 }}>🎧 ApuntesIA</h3>
@@ -35,6 +41,9 @@ export default function App() {
         }}
       >
         {recording ? '⏹ Detener grabación' : '▶ Tomar apuntes de esta pestaña'}
+      </button>
+      <button onClick={openPanel} style={{ padding: 8, borderRadius: 8, border: '1px solid #555', background: 'transparent', color: 'inherit', cursor: 'pointer' }}>
+        📖 Ver apuntes en vivo
       </button>
       {recording && <p style={{ margin: 0, opacity: 0.7 }}>Grabando… mira el contador en el ícono.</p>}
       {error && <p style={{ margin: 0, color: '#E11D48' }}>{error}</p>}
