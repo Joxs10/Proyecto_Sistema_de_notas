@@ -1,3 +1,130 @@
+---
+
+# 🗓️ DÍA 2 — Registro detallado: de audio mudo a transcripción en vivo
+
+## 0. Resumen ejecutivo del día
+
+| Campo | Valor |
+|---|---|
+| Objetivo | Que los chunks de audio capturados (Día 1) se conviertan en texto en vivo vía Whisper, sin romper la experiencia de la clase |
+| Resultado | ✅ Cumplido: transcripción española en tiempo real en sidepanel, 30/30 requests exitosos, audio audible durante captura, historial de sesión persistente |
+| Componentes nuevos | Cloudflare Worker (proxy de APIs), endpoint `/transcribe`, sidepanel, playback de audio, segmentación stop/start, prompt de contexto, historial `chrome.storage.session` |
+| Commits del día | `feat: versiones consolidadas Dia 2 (guardia URL, historial sesion, anti-abort)` + push tras resolver divergencia remota |
+| Costo observado | ~$0.014 USD por 7.5 min de audio (Groq whisper-large-v3, dentro del tier gratis) |
+
+## 1. Arquitectura al cierre del Día 2
+
+```
+[ Pestaña YouTube/Meet/Zoom ]
+        │ tabCapture (audio digital limpio, sin bot)
+        ▼
+[ offscreen document ]
+   ├─ playback <audio> → el usuario SIGUE escuchando la clase
+   ├─ MediaRecorder → segmentos webm/opus de 15 s (stop/start = archivos válidos)
+   └─ fetch POST /transcribe (FormData)
+        ▼
+[ Cloudflare Worker · localhost:8787 ]  ← GROQ_API_KEY vive aquí (.dev.vars / secrets)
+        ▼
+[ Groq · whisper-large-v3 · language=es · prompt=titulo+ultimo segmento ]
+        ▼ texto
+[ offscreen ] → TRANSCRIPT_CHUNK → [ background ]
+                                      ├─ badge contador
+                                      ├─ chrome.storage.session (historial)
+                                      └─ (broadcast natural) → [ sidepanel: apuntes en vivo ]
+```
+
+## 2. Archivos construidos/modificados hoy
+
+| Archivo | Rol |
+|---|---|
+| `worker/src/index.ts` | Proxy CORS con endpoint `/transcribe` (passthrough multipart a Groq). Las keys NUNCA tocan la extensión |
+| `worker/.dev.vars` | Bóveda local de secrets (ignorado por doble .gitignore) |
+| `entrypoints/offscreen/main.ts` | Motor de captura: playback, segmentación 15 s, transcripción con reintento, prompt de contexto, errores amables |
+| `entrypoints/background.ts` | Fuente de verdad: estado, badge, guardia de URLs, archivado a storage.session, GET_HISTORY |
+| `entrypoints/sidepanel/*` | UI persistente de apuntes en vivo con carga de historial al montar |
+| `entrypoints/popup/App.tsx` | Botón "📖 Ver apuntes en vivo" (abre sidepanel) |
+| `wxt.config.ts` | Permisos: tabCapture, offscreen, storage, sidePanel, tabs |
+
+## 3. Crónica de decisiones (el "por qué" de cada paso)
+
+1. **Worker como proxy, no keys en la extensión:** una key embebida en una extensión es pública para cualquiera que la descompile. El Worker es bóveda + futuro punto de auth/metering.
+2. **Groq sobre OpenAI:** ~3.3x más barato por minuto, latencia sub-segundo, español excelente, tier gratis para beta.
+3. **Sidepanel sobre popup para el transcript:** lección Día 1 — el popup muere al cerrarse; el sidepanel persiste durante la clase.
+4. **Playback del stream capturado:** `tabCapture` redirige y silencia el audio de la pestaña; sin playback el estudiante no oye su clase. Se devuelve el stream a un `<audio>` en el offscreen (reason `AUDIO_PLAYBACK`).
+5. **Segmentación stop/start en vez de timeslice:** los fragmentos de timeslice carecen de cabecera webm y Groq los rechaza (`invalid_media_file`); cada `stop()` produce un archivo completo y válido.
+6. **Prompt de contexto a Whisper:** el título de la pestaña + el último segmento transcrito sesgan el vocabulario ("sumas" en vez de "humas"). Costo $0, impacto alto.
+7. **whisper-large-v3 sobre turbo:** más robusto con acentos latinoamericanos y ruido de aula; turbo queda como fallback.
+8. **Historial en `chrome.storage.session`:** el sidepanel es desechable; la verdad de la sesión vive en storage y sobrevive cierre/apertura del panel y reinicios del service worker.
+9. **Guardia de URLs + try/catch amable:** capturar `chrome://*` o una pestaña ya capturada aborta con `AbortError`; ahora se valida antes y se informa en lenguaje humano.
+10. **Metodología de trabajo:** parches chicos = cirugías; archivo con 3+ parches acumulados = reemplazo completo del archivo. Cero merges a mano.
+
+## 4. Catálogo de errores del Día 2 y sus lecciones
+
+| # | Error | Causa raíz | Solución | Lección |
+|---|---|---|---|---|
+| 1 | Wizard de Cloudflare pide "URL de template" | Rama equivocada del asistente ("Template from a GitHub repo") | Ctrl+C y re-elegir `Hello World → Worker only` | Leer cada pregunta del wizard antes de responder |
+| 2 | `502 Bad Gateway` + `invalid_media_file` de Groq | Chunks timeslice sin cabecera webm (solo el 1º era válido) | Segmentación stop/start cada 15 s | Un fragmento de MediaRecorder NO es un archivo |
+| 3 | Video silenciado al capturar | Comportamiento oficial de tabCapture (redirige el audio) | Playback del stream en offscreen + `AUDIO_PLAYBACK` | Todo audio capturado debe devolverse al usuario |
+| 4 | Líneas duplicadas en sidepanel | Relay redundante: el broadcast ya entregaba el mensaje al panel | Eliminar reenvío desde background | `runtime.sendMessage` llega a todos los contextos salvo el emisor |
+| 5 | Offscreen muerto, sin logs ni reacciones | Parches pegados sueltos al final del archivo (`if (msg...)` a nivel de módulo → ReferenceError al cargar) | Archivo completo v5; regla de reemplazo | El código suelto a nivel de módulo se ejecuta al cargar: mata todo |
+| 6 | `Could not establish connection. Receiving end does not exist.` | sendMessage sin receptores vivos (stop sin offscreen, post-recarga) | `.catch(() => {})` en envíos no críticos | El ruido de dev se silencia, no se "cura" |
+| 7 | `AbortError: Error starting tab capture` | Pestaña `chrome://`, captura previa colgada, o streamId de un solo uso reusado | Guardia de URL + try/catch amable + ↻ de extensión | Validar el sujeto antes de capturarlo |
+| 8 | `push` rechazado: `fetch first` / `non-fast-forward` | Commit remoto hecho desde la web ausente en local | `git pull --rebase origin main` y push | Pull al sentarte, push al acostarte |
+| 9 | Rebase: `invalid path 'docs /Bitacora.md'` + `could not detach HEAD` | Carpeta creada en la web con espacio al final; Windows la prohíbe | Renombrar/recrear la ruta limpia desde GitHub | Windows tiene nombres prohibidos: espacio/punto final, CON, NUL… |
+| 10 | Notas desaparecían al cerrar el panel | Estado React efímero en página desechable | Archivado en `chrome.storage.session` + `GET_HISTORY` | La UI pregunta; la verdad vive en background/storage |
+
+## 5. Métricas observadas (datos reales, no promedios de internet)
+
+- **Requests de transcripción:** 30/30 `POST /transcribe 200 OK` en la sesión final limpia
+- **Latencia por chunk de 15 s:** 375–1,095 ms (Groq whisper-large-v3 local→worker→Groq)
+- **Ritmo de apuntes:** 1 párrafo con timestamp cada ~15 s de clase
+- **Costo STT nube observado:** ≈ $0.0018/min → ~$0.11/hora de clase (tier gratis cubre la beta)
+- **Decisión registrada:** el plan barato de producción migrará a **Whisper local en navegador (v0.2)** para llevar ese costo a $0; Groq queda para beta y planes premium
+- **Consola de offscreen al cierre:** limpia (solo log propio `🎧 grabando por segmentos de 15 s…`)
+
+## 6. Hitos del día
+
+1. 🗄️ Worker vivo con secrets ocultos (`"(hidden)"` en wrangler)
+2. 📝 Primera transcripción española en vivo en el sidepanel
+3. 🔊 Clase audible mientras se captura (playback)
+4. 🧱 Segmentos webm válidos: fin de los `invalid_media_file`
+5. 📚 Historial que sobrevive al cierre del panel
+6. 🛡️ Captura blindada: URLs prohibidas y abortos manejados con mensaje humano
+7. 🌳 Repo sincronizado tras la guerra del espacio en `docs `
+
+## 7. Pendientes conocidos (con dueño y día)
+
+| Pendiente | Dueño | Cuándo |
+|---|---|---|
+| Basura de videos en transcripciones ("¡Suscríbete!", créditos, "Subtitulado por…") | Filtro en prompt de DeepSeek | Día 3 |
+| Branding: nombre/descripción/íconos siguen siendo `wxt-react-starter` | `wxt.config.ts` manifest + íconos | Día 5 |
+| Bóveda permanente de sesiones + export Markdown/PDF | IndexedDB + UI de historial | Día 4 |
+| Resúmenes estructurados (tema, puntos clave, conceptos, preguntas de examen) | Endpoint `/summarize` DeepSeek V4-Flash | Día 3 |
+| STT local en navegador (costo $0, privacidad total) | transformers.js / whisper.cpp WASM | v0.2 |
+| Modo Pizarra (visión con change-detection) y Modo Sistema (apps de escritorio) | Roadmap premium | v0.2 |
+| Bot de Discord para servidores de estudio; Modo Micrófono (clases presenciales) | Roadmap de expansión | v0.3 |
+
+## 8. Plan Día 3 (resumen operativo)
+
+1. Worker: endpoint `/summarize` con DeepSeek V4-Flash (`response_format: json_object`, temperature 0.3)
+2. Prompt system: apuntes estructurados + instrucción explícita de **filtrar basura no académica** y corregir errores obvios de transcripción usando el tema
+3. Modo incremental con cache hits: resumen acumulado + nuevo texto como prefijo repetido
+4. Sidepanel: pestaña "Apuntes" con render del JSON (tema, puntos clave, conceptos, preguntas de examen) + botón "Resumir ahora" y auto-cada 3 chunks
+5. Cierre: commit + push + actualización de esta bitácora
+
+## 9. Rituales permanentes (actualizados)
+
+- **Apertura:** `git pull --rebase origin main` → `code .` → terminal 1 `npx wrangler dev` → terminal 2 `npm run dev`
+- **Cierre:** commit descriptivo → `git push` → Ctrl+C en ambas terminales
+- **Debug:** ¿qué vista miro? → último rojo antes del fallo → clic en la fuente → copiar mensaje textual
+- **Seguridad:** secrets solo en `.dev.vars` y Cloudflare Secrets; nunca en código, chat, capturas o commits
+- **Metodología:** cirugías para parches chicos; archivo completo cuando hay 3+ parches acumulados
+
+---
+*Próxima entrada: Día 3 — el río de texto se convierte en apuntes con cerebro.*
+
+---------------------
+
 # 📘 APUNTESIA — Bitácora de Sprint (Documento vivo)
 
 ## 0. Estado del proyecto al iniciar el Día 2
