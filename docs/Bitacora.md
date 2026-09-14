@@ -1,5 +1,3 @@
----
-
 # 🗓️ DÍA 2 — Registro detallado: de audio mudo a transcripción en vivo
 
 ## 0. Resumen ejecutivo del día
