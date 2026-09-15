@@ -1,3 +1,120 @@
+# 📘 Documentación del Día 3 — detallada y lista para tu bitácora
+
+## 3. Bitácora Día 3 — El cerebro: resúmenes estructurados en vivo
+
+### 3.1 Objetivo y resultado
+
+| Campo | Valor |
+|---|---|
+| Objetivo | Convertir el río de transcripciones en apuntes estructurados (tema, pasos, ejemplos, conceptos, preguntas de examen) con un LLM vía el Worker |
+| Resultado | ✅ Cumplido: apuntes en vivo en sidepanel, actualizados cada ~45 s, cronológicos y anclados a la transcripción; cierre de cola al detener |
+| Cerebro usado | Groq `openai/gpt-oss-120b` (tier gratis). DeepSeek V4-Flash queda como ruta de producción pendiente de top-up |
+| STT | Groq `whisper-large-v3` (sin cambios, 200 OK estables) |
+| Commits del día | `feat: Dia 3 - resumenes estructurados en vivo, prompt v2 anclado a transcripcion, cierre de cola y boton honesto` |
+| Costo facturado | $0.00 (Groq free tier; DeepSeek sin saldo no facturó) |
+
+### 3.2 Decisiones técnicas y de fundador (el "por qué")
+
+| Decisión | Razón |
+|---|---|
+| Endpoint `/summarize` en el mismo Worker | Un solo proxy para todos los proveedores: auth, CORS y metering centralizados |
+| SYSTEM_PROMPT con schema JSON estricto (`response_format: json_object`) | El sidepanel renderiza estructura, no párrafos: tema, pasos, ejemplos, conceptos, preguntas |
+| Modo incremental con prefijo cache-friendly | El system prompt + apuntes anteriores se repiten idénticos al inicio; lo nuevo va al final → cache hits que abaratan cada pasada |
+| Auto-resumen cada 3 chunks + botón manual | Sensación en vivo sin spam de llamadas; el botón existe para cerrar la cola final |
+| **Cambio de cerebro DeepSeek → Groq** | DeepSeek respondió `Insufficient Balance` (modelo prepago sin crédito). Groq ya tenía key y tier gratis con LLMs → cero fricción para seguir |
+| `CHAT_MODEL` en `.dev.vars` + endpoint `/models` | Los slugs de modelos caducan (pasó el mismo día): config fuera del código + inventario consultable de cerebros disponibles |
+| **SYSTEM_PROMPT v2 con REGLA DE ORO** | El modelo confabulaba en temas "fáciles" (rellenaba desde memoria) y reescribía el pasado (deriva incremental). Reglas: solo lo dicho en clase, orden cronológico, append-only, campos `pasos` y `ejemplos` literales |
+| Cierre de cola automático al `STOP_CAPTURE` | Los 1-2 chunks huérfanos del final de la clase ya no se pierden |
+| Botón honesto (contador de pendientes + disabled) | Un botón que no comunica su estado parece roto; ahora muestra `(N)` y se desactiva sin cola |
+| **NO construir verificador aritmético determinista (decisión de fundador)** | El bug `785 + 457 = 1200` se podía parchear con regex por operación, pero no escala a cientos de fórmulas. Se acepta el riesgo hoy y se agenda verificación escalable (modelo matemático dedicado o anclaje visual) en v0.2 |
+| Postura competitiva ante FreeNotes (S/20/año) | No se compite en precio: a $0.44/mes nadie sostiene STT+LLM en nube real. Se compite en resultado (captura en vivo + examen) y se agenda pricing regional PPP para la semana de pagos |
+
+### 3.3 Código construido/modificado
+
+1. `worker/src/index.ts` → versiones v1→v4 hasta la final: `/models` (inventario Groq), `/transcribe` (sin cambios), `/summarize` (body con try/catch 400, prefijo cache-friendly, `model: env.CHAT_MODEL`, SYSTEM_PROMPT v2, relay de errores del proveedor en el 502)
+2. `worker/.dev.vars` → `+ DEEPSEEK_API_KEY`, `+ CHAT_MODEL=openai/gpt-oss-120b`
+3. `entrypoints/background.ts` → guarda `topic` (título de pestaña) en `chrome.storage.session`; `GET_HISTORY` devuelve `{lines, topic}`
+4. `entrypoints/sidepanel/App.tsx` → v2 (tabs En vivo/Apuntes + botón) → v3 (contador de pendientes, listener `STOP_CAPTURE` para cierre de cola, render de `pasos` y `ejemplos`, error que muestra el motivo real del proveedor)
+
+### 3.4 Activo documental: SYSTEM_PROMPT v2 (vigente)
+
+```text
+Eres ApuntesIA, un tomador de apuntes universitario experto. Recibes la transcripción cruda de una clase.
+
+REGLA DE ORO: usa ÚNICAMENTE información presente en la transcripción. NO inventes ejemplos, números,
+procedimientos ni definiciones que el profesor no mencionó. Si un dato no está, omítelo: un hueco
+honesto vale más que una mentira pulida.
+
+Preserva el ORDEN CRONOLÓGICO de la clase.
+
+Devuelve ÚNICAMENTE un JSON válido:
+{ "tema", "resumen", "pasos": string[], "ejemplos": string[], "puntos_clave": string[],
+  "conceptos": [{termino, definicion}], "preguntas_examen": [{pregunta, respuesta}] }
+
+Reglas: corrige errores obvios de transcripción con tema/glosario; ignora basura no académica;
+NO modifiques ni reordenes contenido acumulado (solo agrega); copia resultados tal cual los dijo
+el profesor (no calcules por tu cuenta); máximos por pasada: 7 pasos, 6 ejemplos, 7 puntos,
+6 conceptos, 4 preguntas; español.
+```
+
+### 3.5 Errores del Día 3 y lecciones (manual de guerra, parte 3)
+
+| # | Error | Causa raíz | Solución | Lección |
+|---|---|---|---|---|
+| 1 | Panel mostraba solo "Tema de la clase" sin errores; `/summarize 200 OK` en **8 ms** | Worker corriendo sin la ruta `/summarize` (archivo no guardado): el fallback `{"ok":true}` se parseó como notes vacío | Reemplazo completo del worker + reload | **La latencia es detector de mentiras**: un 200 en 8 ms no llamó a ningún proveedor |
+| 2 | `502` sin motivo legible en el panel | El sidepanel no leía el body del error | Parche: leer `body.error` y mostrarlo | Todo proxy debe propagar el motivo del proveedor hasta la UI |
+| 3 | `Insufficient Balance` de DeepSeek | Cuenta prepago sin crédito: su "gratis" no aplicaba | Conmutar cerebro a Groq (key existente) | La arquitectura provider-agnóstica convirtió una factura en un cambio de config |
+| 4 | `model_not_found` con `llama-3.3-70b-versatile` (~100 ms de rechazo) | Groq jubiló/renombró el slug | `CHAT_MODEL` en `.dev.vars` + endpoint `/models`; se eligió `openai/gpt-oss-120b` | Los slugs caducan: el modelo debe ser configuración, no código |
+| 5 | Botón "Resumir ahora" parecía muerto | Guardia silenciosa con pending vacío tras el auto-resumen | Contador `(N)` + disabled + cierre de cola en STOP | Un control sin feedback de estado es un control roto percibido |
+| 6 | Deriva: el resumen reescribía/reordenaba lo anterior e inventaba ejemplos | Modo incremental pedía "devuelve todo actualizado" + modelo rellenando desde memoria en tema fácil | Prompt v2: append-only, REGLA DE ORO, campos `pasos`/`ejemplos` literales | Los apuntes que inventan son peores que los vacíos: el usuario confía en ellos |
+| 7 | `785 + 457 = 1200` (correcto: 1242) | Oído de Whisper en números largos o aritmética del LLM | Propuesto guardrail determinista; **fundador lo agenda, no lo construye hoy** | No todo bug se parchea hoy: se decide con criterio de escala y se documenta |
+| 8 | Confusión "¿dónde está el fetch?" | Concepto no internalizado | Mini-lección: fetch = llamada HTTP; el worker tiene 3 (models, transcribe, summarize) | Documentar el "qué es" antes del "dónde está" |
+
+### 3.6 Métricas reales observadas
+
+- **Latencia `/summarize` (gpt-oss-120b):** 2.1–3.7 s por pasada (aceptable para cadencia de 45 s)
+- **Latencia de rechazo Groq (slug malo):** ~100 ms · **DeepSeek sin saldo:** ~750-850 ms
+- **Cadencia de apuntes:** auto cada 3 chunks ≈ 45 s; cierre de cola instantáneo al detener
+- **Costo facturado del día:** $0.00 (free tier Groq; DeepSeek no facturó sin saldo)
+- **Calidad percibida:** pasos cronológicos fieles al video; ejemplos literales con un error aritmético conocido y aceptado (backlog)
+
+### 3.7 Hitos del día
+
+1. 🧠 Primer resumen estructurado generado por TU pipeline (no por un playground)
+2. 🔀 Cambio de proveedor de LLM en vivo, sin reescribir arquitectura (proxy agnóstico)
+3. 🩺 Endpoint `/models`: inventario de cerebros consultable
+4. 🪜 Apuntes con pasos en orden cronológico y ejemplos literales (prompt v2)
+5. 🎬 Cierre de cola: ningún chunk del final de la clase se queda sin resumir
+6. 🛡️ Error propagation completo: UI → worker → proveedor, con motivo legible
+
+### 3.8 Backlog y pendientes (con dueño y momento)
+
+| Pendiente | Dueño | Cuándo |
+|---|---|---|
+| Verificación escalable de contenido (modelo matemático dedicado / anclaje visual Modo Pizarra) | Roadmap técnico | v0.2 |
+| Top-up DeepSeek + benchmark A/B de calidad y costo Groq vs DeepSeek sobre transcripciones reales | Fundador | Beta cerrada |
+| Teardown FreeNotes (4 preguntas: ¿captura en vivo? ¿preguntas de examen? ¿topes? ¿reseñas de transcripción?) | Fundador | 15 min, Día 4 con café |
+| Pricing regional PPP (Stripe por país) como respuesta estructural a competidores low-cost | Semana de pagos | Día 6-7 |
+| Bóveda permanente de sesiones + export Markdown/PDF | Próximo sprint | **Día 4** |
+| Branding (nombre/descripción/íconos siguen `wxt-react-starter`) | Manifiesto + assets | Día 5 |
+
+### 3.9 Nota de fundador (contexto emocional y estratégico del día)
+
+Día 3 trajo el primer momento de duda ("la veo negra") disparado por un competidor a S/20/año y un error aritmético visible. Resolución documentada: (1) el error se acepta conscientemente con plan escalable, no por pereza; (2) el precio del competidor está por debajo del COGS real de IA en nube, lo que implica producto distinto o promo insostenible: se valida con teardown, no con pánico; (3) los criterios de muerte del experimento siguen siendo datos propios (signups, retención D3), no precios ajenos. Este proyecto ya es, en el peor escenario, un portafolio de ingeniería de nivel senior; en el mejor, una empresa. Ambos caminos se construyen igual: commiteando hoy.
+
+---
+
+## 4. Plan Día 4 — La bóveda: sesiones que no mueren
+
+1. Almacenamiento permanente por sesión en `chrome.storage.local` (o IndexedDB si el tamaño aprieta): `{id, fecha, titulo, duracion, lineas, notes}`
+2. Guardado automático al `STOP_CAPTURE` + lista de sesiones históricas en el sidepanel
+3. Export **Markdown** (descarga directa) y copiar al portapapeles; PDF en v0.2
+4. Decidir política de retención local (borrado manual por sesión; nada viaja a la nube sin auth del Día 5+)
+5. Cierre: commit + push + entrada de bitácora con métricas (peso promedio de sesión, tiempo de export)
+
+---
+
+*Fin del Día 3. La extensión ya escucha, oye, escribe, resume en orden y cierra su cola. Mañana: memoria permanente y apuntes exportables — el día en que ApuntesIA deja de ser un experimento y se vuelve un archivo de conocimiento del estudiante.*
 # 🗓️ DÍA 2 — Registro detallado: de audio mudo a transcripción en vivo
 
 ## 0. Resumen ejecutivo del día
