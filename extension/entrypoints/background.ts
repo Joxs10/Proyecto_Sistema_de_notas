@@ -44,9 +44,11 @@ export default defineBackground(() => {
     }
 
     if (msg.type === 'GET_HISTORY') {
-      chrome.storage.session.get({ lines: [] }).then((s) => sendResponse({ lines: s.lines }));
-      return true;
-    }
+  chrome.storage.session
+    .get({ lines: [], topic: '' })
+    .then((s) => sendResponse({ lines: s.lines, topic: s.topic }));
+  return true;
+}
 
     if (msg.type === 'TRANSCRIPT_ERROR') {
       chrome.runtime.sendMessage({ type: 'TRANSCRIPT_ERROR', error: msg.error }).catch(() => {});
@@ -56,6 +58,7 @@ export default defineBackground(() => {
 
   async function startCapture(tabId: number) {
     const tab = await chrome.tabs.get(tabId);
+    void chrome.storage.session.set({ topic: tab.title ?? '' });
     const url = tab.url ?? '';
     if (/^(chrome|chrome-extension|about|devtools|edge):/.test(url) || url.includes('chromewebstore')) {
       throw new Error('Abre una pestaña normal (YouTube, Meet, Zoom…) para capturar');
