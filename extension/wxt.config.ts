@@ -4,7 +4,7 @@ import { defineConfig } from 'wxt';
 export default defineConfig({
   modules: ['@wxt-dev/module-react'],
   manifest: {
-   permissions: ['tabCapture', 'offscreen', 'storage', 'sidePanel', 'tabs'],
+   permissions: ['tabCapture', 'offscreen', 'storage', 'sidePanel', 'tabs', 'unlimitedStorage'],
   host_permissions: ['http://localhost:8787/*'],
   },
 });

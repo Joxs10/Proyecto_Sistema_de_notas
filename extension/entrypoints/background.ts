@@ -1,3 +1,5 @@
+const WORKER_URL = 'http://localhost:8787';
+
 export default defineBackground(() => {
   let chunkCount = 0;
   let isRecording = false;
@@ -24,6 +26,7 @@ export default defineBackground(() => {
       chunkCount = 0;
       chrome.action.setBadgeText({ text: '' });
       chrome.runtime.sendMessage({ type: 'STOP_CAPTURE' }).catch(() => {});
+      void archiveSession();
       sendResponse({ ok: true });
       return;
     }
@@ -44,11 +47,38 @@ export default defineBackground(() => {
     }
 
     if (msg.type === 'GET_HISTORY') {
-  chrome.storage.session
-    .get({ lines: [], topic: '' })
-    .then((s) => sendResponse({ lines: s.lines, topic: s.topic }));
-  return true;
-}
+      chrome.storage.session
+        .get({ lines: [], topic: '' })
+        .then((s) => sendResponse({ lines: s.lines, topic: s.topic }));
+      return true;
+    }
+
+    if (msg.type === 'GET_SESSIONS') {
+      chrome.storage.local.get({ sessions: [] }).then((s) => {
+        const light = (s.sessions as Array<Record<string, unknown>>).map(
+          ({ lineas: _lineas, ...rest }) => rest
+        );
+        sendResponse({ sessions: light });
+      });
+      return true;
+    }
+
+    if (msg.type === 'GET_SESSION') {
+      chrome.storage.local.get({ sessions: [] }).then((s) => {
+        const found =
+          (s.sessions as Array<{ id: number }>).find((x) => x.id === msg.id) ?? null;
+        sendResponse({ session: found });
+      });
+      return true;
+    }
+
+    if (msg.type === 'DELETE_SESSION') {
+      chrome.storage.local.get({ sessions: [] }).then((s) => {
+        const sessions = (s.sessions as Array<{ id: number }>).filter((x) => x.id !== msg.id);
+        return chrome.storage.local.set({ sessions }).then(() => sendResponse({ ok: true }));
+      });
+      return true;
+    }
 
     if (msg.type === 'TRANSCRIPT_ERROR') {
       chrome.runtime.sendMessage({ type: 'TRANSCRIPT_ERROR', error: msg.error }).catch(() => {});
@@ -58,11 +88,11 @@ export default defineBackground(() => {
 
   async function startCapture(tabId: number) {
     const tab = await chrome.tabs.get(tabId);
-    void chrome.storage.session.set({ topic: tab.title ?? '' });
     const url = tab.url ?? '';
     if (/^(chrome|chrome-extension|about|devtools|edge):/.test(url) || url.includes('chromewebstore')) {
       throw new Error('Abre una pestaña normal (YouTube, Meet, Zoom…) para capturar');
     }
+    void chrome.storage.session.set({ topic: tab.title ?? '' });
     const streamId = await chrome.tabCapture.getMediaStreamId({ targetTabId: tabId });
     try {
       await chrome.offscreen.createDocument({
@@ -74,5 +104,40 @@ export default defineBackground(() => {
       /* ya existe */
     }
     chrome.runtime.sendMessage({ type: 'START_CAPTURE', streamId, title: tab.title ?? '' });
+  }
+
+  async function archiveSession() {
+    const s = await chrome.storage.session.get({
+      lines: [] as Array<{ t: string; text: string }>,
+      topic: '',
+    });
+    if (!s.lines.length) return;
+
+    const transcript = s.lines.map((l) => l.text).join('\n');
+    let notes: unknown = null;
+    try {
+      const res = await fetch(`${WORKER_URL}/summarize`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ transcript, topic: s.topic || undefined }),
+      });
+      if (res.ok) notes = await res.json();
+    } catch {
+      /* la sesión se guarda igual, sin resumen */
+    }
+
+    const prev = await chrome.storage.local.get({ sessions: [] as unknown[] });
+    const session = {
+      id: Date.now(),
+      fecha: new Date().toLocaleString(),
+      titulo: s.topic || 'Clase sin título',
+      chunks: s.lines.length,
+      lineas: s.lines,
+      notes,
+    };
+    const sessions = [session, ...(prev.sessions as unknown[])].slice(0, 50);
+    await chrome.storage.local.set({ sessions });
+    await chrome.storage.session.set({ lines: [], topic: '' });
+    console.log('[ApuntesIA] 📚 sesión archivada:', session.titulo);
   }
 });
