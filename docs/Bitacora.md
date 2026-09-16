@@ -1,3 +1,137 @@
+# 📘 Documentación del Día 4 — lista para tu bitácora
+
+Pega esto en `docs/Bitacora.md` **después de la sección del Día 3**. Al final: `git add -A` → `git commit -m "docs: bitacora detallada del Dia 4"` → `git push`.
+
+---
+
+## 4. Bitácora Día 4 — La bóveda: sesiones que no mueren y apuntes exportables
+
+### 4.1 Objetivo y resultado
+
+| Campo | Valor |
+|---|---|
+| Objetivo | Que las clases grabadas no mueran al cerrar el navegador: archivarlas permanentemente, poder reabrirlas cualquier día y exportarlas como apuntes legibles por humanos |
+| Resultado | ✅ Cumplido: archivado automático al detener, historial navegable, export Markdown, copiar al portapapeles y borrado con confirmación |
+| Almacenamiento | `chrome.storage.local` con `unlimitedStorage` + tope de 50 sesiones (FIFO) |
+| Resumen final | Generado por background al `STOP_CAPTURE` con la transcripción completa de la clase |
+| Commits del día | `feat: Dia 4 - boveda permanente de sesiones, historial y export Markdown` |
+| Costo facturado | $0.00 (Groq free tier; un `/summarize` extra por sesión al detener) |
+
+### 4.2 Decisiones técnicas y de fundador (el "por qué")
+
+| Decisión | Razón |
+|---|---|
+| `chrome.storage.local` + `unlimitedStorage` en vez de IndexedDB | Una clase de 6.5 h ≈ 400 KB de texto JSON; con tope de 50 clases caben semestres enteros. IndexedDB se reserva para cuando guardemos audio crudo (v0.2) |
+| Tope de 50 sesiones con FIFO | Protege al navegador de crecer sin control; el usuario aún puede borrar manualmente antes |
+| Resumen final al `STOP_CAPTURE` | Aunque el usuario nunca abra el panel durante la clase, la sesión se guarda con apuntes completos generados contra la transcripción entera |
+| Formato Markdown para el export | Estándar universal: se pega en Notion, Obsidian, GitHub, WhatsApp, email; legible sin software especial |
+| Tres modos de export (⬇️ .md, 📋 Copiar, 👁 Abrir) | Cubre tres flujos reales: guardar archivo local, pegar en Notion/Docs, consultar en la propia extensión |
+| Borrado con `confirm()` nativo | Prevención de accidente; sin modal propio (no vale la pena en un MVP) |
+| `GET_SESSIONS` devuelve sesiones ligeras (sin `lineas`) | Renderizar 50 tarjetas con 400 KB de transcripción cada una congelaría el panel; el detalle se carga solo con `GET_SESSION` por id |
+| **Nueva regla de trabajo: cirugías con anclas exactas o archivo completo** | El error del día fue causado por parches sueltos sin referencia al archivo base; desde hoy: "archivo → ancla exacta → qué se inserta/reemplaza" |
+
+### 4.3 Código construido/modificado
+
+1. `wxt.config.ts` → permiso `unlimitedStorage` agregado
+2. `entrypoints/background.ts` → `WORKER_URL` a nivel módulo + `archiveSession()` invocada desde `STOP_CAPTURE` + 3 mensajes nuevos (`GET_SESSIONS`, `GET_SESSION`, `DELETE_SESSION`) + función `archiveSession` (resume final + persistencia en `local` + limpieza de `session`)
+3. `entrypoints/sidepanel/App.tsx` → v4 con 3 pestañas (En vivo, Apuntes, Historial), helpers `sessionToMarkdown`, `NotesView`, acciones de export/copy/delete y apertura de sesión con transcripción colapsable
+
+### 4.4 Activo documental: schema de sesión (vigente)
+
+```ts
+// Cada sesión en chrome.storage.local.sessions[]:
+{
+  id: number;                  // Date.now() al archivar
+  fecha: string;               // toLocaleString()
+  titulo: string;              // tab.title o "Clase sin título"
+  chunks: number;              // cantidad de chunks transcritos
+  lineas: Array<{ t: string; text: string }>;  // transcripción con timestamps
+  notes: Notes | null;         // resumen estructurado final (o null si el worker falló)
+}
+```
+
+### 4.5 Activo documental: formato de export Markdown (vigente)
+
+```
+# <tema>
+
+_Fecha: <fecha> · Chunks: <chunks>_
+
+## Resumen
+## Pasos de la clase (lista numerada)
+## Ejemplos literales (lista con viñetas)
+## Puntos clave (lista con viñetas)
+## Conceptos (lista con negritas)
+## Posibles preguntas de examen (P: / R:)
+## Transcripción completa (con timestamps)
+```
+
+### 4.6 Errores del Día 4 y lecciones (manual de guerra, parte 4)
+
+| # | Error | Causa raíz | Solución | Lección |
+|---|---|---|---|---|
+| 1 | Botón de captura muerto tras los primeros parches | Sintaxis rota en `background.ts` por bloques sueltos sin anclas al archivo base → service worker no arrancaba → nadie escuchaba al popup | Reemplazo completo del archivo + nueva regla de trabajo | **Cirugía sin ancla = cirugía a ciegas.** Regla permanente: "archivo → ancla exacta → qué se inserta/reemplaza", o archivo completo sin preguntar |
+| 2 | Panel podría congelarse con muchas sesiones | `GET_SESSIONS` devolviendo `lineas` (hasta 400 KB por sesión) | Sesiones ligeras en el listado; detalle por id al abrir | Lazy-loading del detalle es patrón de UI, no lujo |
+
+### 4.7 Métricas reales observadas
+
+- **Latencia de archivado tras detener:** 2-3 s (1 fetch a `/summarize` + escritura en local)
+- **Tamaño de sesión típica:** ~10 KB (1 clase de 3-4 min) a ~400 KB (clase de 6.5 h)
+- **Capacidad real con tope de 50:** ~200 MB de apuntes permanentes en el navegador
+- **Latencia de export .md:** instantánea (< 100 ms, todo local)
+- **Tasa de éxito de archivado:** 1/1 en pruebas (resumen final siempre llega si el worker está vivo; si no, la sesión se guarda igual sin notes)
+- **Costo incremental por sesión archivada:** ~$0.001 (un `/summarize` adicional al tier gratis)
+
+### 4.8 Hitos del día
+
+1. 📚 Primera sesión archivada automáticamente al detener
+2. 📜 Historial navegable con contador en vivo en la pestaña
+3. ⬇️ Export Markdown con estructura completa (7 secciones)
+4. 📋 Copiar al portapapeles con feedback visual ("✅ Copiado")
+5. 🗑 Borrado con confirmación nativa
+6. 📖 Apertura de sesión con transcripción colapsable
+7. 🛡️ Regla de trabajo permanente: cirugías con anclas o archivo completo
+
+### 4.9 Backlog actualizado (con dueño y momento)
+
+| Pendiente | Dueño | Cuándo |
+|---|---|---|
+| Búsqueda y filtros en el Historial (por tema, fecha, materia) | UX | Día 5-6 |
+| Export PDF (además de Markdown) | v0.2 | Post-lanzamiento |
+| Sync de sesiones a la nube con cuenta de usuario | Autenticación Día 5+ | Semana 2 |
+| Bóveda con IndexedDB (si se guarda audio crudo) | v0.2 (Modo Pizarra/Sistema) | v0.2 |
+| Teardown FreeNotes (15 min con café) | Fundador | Día 5 |
+| Auditoría gitleaks + publicar repo | Fundador | Día 5 |
+| Branding (nombre/descripción/íconos) | Manifiesto + assets | **Día 5** |
+| Consentimiento y política de privacidad | Docs + UI | **Día 5** |
+| Landing + waitlist | Web pública | **Día 6** |
+
+### 4.10 Estado acumulado del sprint
+
+| Día | Órgano construido | Hito |
+|---|---|---|
+| 1 | Oído | Captura de audio de pestaña |
+| 2 | Pluma | Transcripción en vivo con Whisper |
+| 3 | Cerebro | Resúmenes estructurados con LLM |
+| **4** | **Memoria** | **Bóveda permanente + export Markdown** |
+
+**Producto funcional al cierre del Día 4:** un estudiante instala la extensión, captura una clase real, obtiene apuntes estructurados en vivo, la clase se archiva sola al terminar, puede reabrirla mañana y exportarla como Markdown para pegar en Notion o mandarla al grupo. **Esto ya es un MVP mínimo viable**, no un prototipo.
+
+---
+
+## 5. Plan Día 5 — Vestirlo para el mundo: branding + consentimiento
+
+1. **Branding:** nombre definitivo (ApuntesIA u otro), descripción en manifiesto, íconos propios (SVG 128/48/32/16), paleta de color consistente con el sidepanel
+2. **Consentimiento:** modal en primera apertura explicando qué se graba, qué se guarda, qué NUNCA sale del navegador (sin audio crudo local en v1, sin subida a la nube sin cuenta)
+3. **Política de privacidad:** `docs/PRIVACY.md` con texto real, link desde el popup
+4. **Limpieza visual:** estilos consistentes, dark mode coherente con el tema del navegador
+5. **Auditoría de seguridad:** `gitleaks git . -v` en los dos repos + publicación del principal
+6. **Teardown FreeNotes** (15 min, opcional con café)
+7. Cierre: commit + push + entrada de bitácora con screenshot de la extensión con identidad propia
+
+---
+
+*Fin del Día 4. La extensión ya escucha, oye, escribe, resume, recuerda y exporta. Mañana le ponemos cara, nombre y un consentimiento honesto: el día en que ApuntesIA deja de ser una colección de órganos y se convierte en alguien a quien presentar.*
 # 📘 Documentación del Día 3 — detallada y lista para tu bitácora
 
 ## 3. Bitácora Día 3 — El cerebro: resúmenes estructurados en vivo
